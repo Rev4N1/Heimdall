@@ -1,0 +1,50 @@
+name: Documentation
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+permissions: write-all
+
+jobs:
+  update:
+     name: Update Documentation
+     runs-on: ubuntu-latest
+     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+     steps:
+     - name: Checkout source code
+       uses: actions/checkout@main
+
+     - name: Download README
+       run: |
+           curl -fsSL "https://git.sr.ht/~grimler/Heimdall/blob/master/README.md" -o "./README" -O
+
+     - name: Update README.md
+       run: |
+           [ -e "./README.md" ] || touch "./README.md" 
+           [ -e "./README.md" ] || echo '# [Source Code](https://git.sr.ht/~grimler/Heimdall)' >> README.md
+           sed -i '/<!-- README:START -->/,/<!-- README:END -->/d' README.md
+           echo '<!-- README:START -->' >> README.md
+           cat ./README >> README.md
+           echo '<!-- README:END -->' >> README.md
+           sed -i 's/Linux\/README (\[online\](Linux\/README))/Linux\/README \(\[online\]\(https:\/\/git.sr.ht\/~grimler\/Heimdall\/tree\/master\/Linux\/README\)\)/' README.md
+           sed -i 's/OSX\/README.txt (\[online\](OSX\/README.txt))/OSX\/README.txt \(\[online\]\(https:\/\/git.sr.ht\/~grimler\/Heimdall\/tree\/master\/OSX\/README.txt\)\)/' README.md
+           sed -i 's/Win32\/README.txt (\[online\](Win32\/README.txt))/Win32\/README.txt \(\[online\]\(https:\/\/git.sr.ht\/~grimler\/Heimdall\/tree\/master\/Win32\/README.txt\)\)/' README.md
+
+     - name: Download LICENSE
+       run: |
+           curl -fsSL "https://git.sr.ht/~grimler/Heimdall/blob/master/LICENSE" -o "./LICENSE" -O
+
+     - name: Update LICENSE.md
+       run: |
+           [ -e "./LICENSE.md" ] || touch "./LICENSE.md"
+           sed -i '/<!-- LICENSE:START -->/,/<!-- LICENSE:END -->/d' LICENSE.md
+           echo '<!-- LICENSE:START -->' >> LICENSE.md
+           cat ./LICENSE >> LICENSE.md
+           echo '<!-- LICENSE:END -->' >> LICENSE.md
+
+     - name: Push
+       uses: actions-x/commit@master
+       with:
+          name: GitHub Actions
+          files: ./README.md ./LICENSE.md
+          message: 'Update documentation'
