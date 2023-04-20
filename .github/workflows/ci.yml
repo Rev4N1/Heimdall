@@ -146,9 +146,12 @@ jobs:
         shell: powershell
 
     - name: Upload builds to release
-      uses: svenstaro/upload-release-action@master
+      uses: GoogleCloudPlatform/release-please-action@main
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: ./*-build.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
+        package-name: heimdall
+        publish: true
         tag: ${{ steps.version.outputs.stdout }}
-        file_glob: true
+      env:
+        RELEASE_ASSET_NAME: heimdall-${{ steps.version.outputs.stdout }}.zip
+        file: ./*-build.zip
