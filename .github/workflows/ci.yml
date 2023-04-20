@@ -1,0 +1,154 @@
+name: CI
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 16 * * 1"
+permissions: write-all
+
+jobs:
+  linux-build:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: git clone "https://git.sr.ht/~grimler/Heimdall"
+
+    - name: Install dependencies
+      run: |
+          sudo apt update
+          sudo apt -y install build-essential cmake zlib1g-dev libusb-1.0-0-dev libgl1-mesa-glx libgl1-mesa-dev qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools
+
+    - name: Build
+      working-directory: ./Heimdall
+      run: |
+          mkdir build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: linux-build
+        path: "./Heimdall/build/bin/heimdall"
+
+  macos-build:
+    name: MacOS Build
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: git clone "https://git.sr.ht/~grimler/Heimdall"
+
+    - name: Install dependencies
+      run: brew install libusb qt5 cmake
+
+    - name: Build
+      working-directory: ./Heimdall
+      run: |
+          mkdir build
+          cd build
+          cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DQt5Widgets_DIR=/usr/local/opt/qt5/lib/cmake/Qt5Widgets ..
+          make
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: macos-build
+        path: "./Heimdall/build/bin/heimdall"
+
+  win-build:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: git clone "https://git.sr.ht/~grimler/Heimdall"
+
+    - name: Install dependencies
+      uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: >-
+          mingw-w64-x86_64-clang
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-libusb
+          mingw-w64-x86_64-qt5-static
+          make
+
+    - name: Build
+      working-directory: ./Heimdall
+      shell: msys2 {0}
+      run: |
+          export PATH="/mingw64/bin:$PATH"
+          mkdir build
+          cd build
+          cmake -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DQt5Widgets_DIR=/mingw64/qt5-static/lib/cmake/Qt5Widgets ..
+          make
+
+    - name: Get Zadig
+      working-directory: ./Heimdall
+      shell: msys2 {0}
+      run: |
+          rm -fr ./build/bin/heimdall-frontend.exe
+          curl -s https://api.github.com/repos/pbatard/libwdi/releases/latest \
+          | grep "browser_download_url.*exe" \
+          | cut -d : -f 2,3 \
+          | tr -d \" \
+          | wget -O ./build/bin/zadig.exe -qi -
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: win-build
+        path: "./Heimdall/build/bin/*"
+
+  release:
+    name: Release
+    needs: [linux-build, macos-build, win-build]
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Get Linux build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: linux-build
+        path: ./linux-build
+
+    - name: Get MacOS build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: macos-build
+        path: ./macos-build
+
+    - name: Get Windows build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: win-build
+        path: ./win-build
+
+    - name: Create archives
+      run: |
+          7z a linux-build.zip .\linux-build\*
+          7z a macos-build.zip .\macos-build\*
+          7z a win-build.zip .\win-build\*
+
+    - name: Get Heimdall version
+      uses: mathiasvr/command-output@main
+      id: version
+      with:
+        run: ./win-build/heimdall.exe info | Select-String "Heimdall v" | ForEach-Object {(-split $_)[1] -join ' '}
+        shell: powershell
+
+    - name: Upload builds to release
+      uses: svenstaro/upload-release-action@master
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ./*-build.zip
+        tag: ${{ steps.version.outputs.stdout }}
+        file_glob: true
