@@ -1,0 +1,158 @@
+name: CI
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 16 * * 1"
+permissions: write-all
+
+jobs:
+  linux-build:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: |
+          git clone "https://git.sr.ht/~grimler/Heimdall"
+          cd Heimdall
+          # git checkout 
+          git revert 7c18391d
+          git revert 5093164a
+      continue-on-error: true
+
+    - name: Install dependencies
+      run: |
+          sudo apt update
+          sudo apt -y install cmake g++ pkg-config libusb-1.0-0-dev qtbase5-dev zlib1g-dev
+
+    - name: Build
+      working-directory: ./Heimdall
+      run: |
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: linux-build
+        path: "./Heimdall/build/bin/heimdall"
+
+  macos-build:
+    name: MacOS Build
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: |
+          git clone "https://git.sr.ht/~grimler/Heimdall"
+          cd Heimdall
+          # git checkout 
+          git revert 7c18391d
+          git revert 5093164a
+      continue-on-error: true
+
+    - name: Install dependencies
+      run: brew install libusb qt5 cmake
+
+    - name: Build
+      working-directory: ./Heimdall
+      run: |
+          mkdir build && cd build
+          cmake -G "Unix Makefiles" -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release ..
+          LIBRARY_PATH=/usr/local/lib make
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: macos-build
+        path: "./Heimdall/build/bin/heimdall"
+
+  win-build:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Clone Repository
+      run: |
+          git clone "https://git.sr.ht/~grimler/Heimdall"
+          cd Heimdall
+          # git checkout 
+          git revert 7c18391d
+          git revert 5093164a
+      continue-on-error: true
+
+    - name: Install dependencies
+      uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: >-
+          mingw-w64-x86_64-clang
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-libusb
+          mingw-w64-x86_64-qt5-static
+          make
+
+    - name: Build
+      working-directory: ./Heimdall
+      shell: msys2 {0}
+      run: |
+          export PATH="/mingw64/bin:$PATH"
+          mkdir build && cd build
+          cmake -G "MSYS Makefiles" -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release -DQt5Widgets_DIR=/mingw64/qt5-static/lib/cmake/Qt5Widgets ..
+          make
+
+    - name: Upload build to artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: win-build
+        path: "./Heimdall/build/bin/*"
+
+  release:
+    name: Release
+    needs: [linux-build, macos-build, win-build]
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Get Linux build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: linux-build
+        path: ./linux-build
+
+    - name: Get MacOS build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: macos-build
+        path: ./macos-build
+
+    - name: Get Windows build from artifacts
+      uses: actions/download-artifact@main
+      with:
+        name: win-build
+        path: ./win-build
+
+    - name: Create archives
+      run: |
+          7z a linux-build.zip .\linux-build\*
+          7z a macos-build.zip .\macos-build\*
+          7z a win-build.zip .\win-build\*
+
+    - name: Get Heimdall version
+      uses: mathiasvr/command-output@main
+      id: version
+      with:
+        run: ./win-build/heimdall.exe version
+        shell: powershell
+
+    - name: Upload builds to release
+      uses: svenstaro/upload-release-action@master
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ./*-build.zip
+        tag: ${{ steps.version.outputs.stdout }}
+        file_glob: true
