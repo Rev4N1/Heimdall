@@ -13,13 +13,7 @@ jobs:
     - uses: actions/checkout@main
 
     - name: Clone Repository
-      run: |
-          git clone "https://git.sr.ht/~grimler/Heimdall"
-          cd Heimdall
-          # git checkout 
-          git revert 7c18391d
-          git revert 5093164a
-      continue-on-error: true
+      run: git clone "https://git.sr.ht/~grimler/Heimdall"
 
     - name: Install dependencies
       run: |
@@ -46,13 +40,7 @@ jobs:
     - uses: actions/checkout@main
 
     - name: Clone Repository
-      run: |
-          git clone "https://git.sr.ht/~grimler/Heimdall"
-          cd Heimdall
-          # git checkout 
-          git revert 7c18391d
-          git revert 5093164a
-      continue-on-error: true
+      run: git clone "https://git.sr.ht/~grimler/Heimdall"
 
     - name: Install dependencies
       run: brew install libusb qt5 cmake
