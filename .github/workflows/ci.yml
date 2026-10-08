@@ -1,146 +1,195 @@
 name: CI
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and re-upload even if the release already exists
+        type: boolean
+        default: false
   schedule:
-    - cron: "0 16 * * 1"
-permissions: write-all
+    - cron: "0 16 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://git.sr.ht/~grimler/Heimdall
 
 jobs:
+  check:
+    name: Check upstream
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+    - name: Resolve latest tag
+      id: check
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FORCE: ${{ inputs.force }}
+      run: |
+          tag=$(git ls-remote --tags --refs --sort=-v:refname "$UPSTREAM" 'v*' | head -1 | sed 's#.*refs/tags/##')
+          [ -n "$tag" ] || { echo "::error::No upstream tag found"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" != "true" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::$tag is already released, nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   linux-build:
     name: Linux Build
-    runs-on: ubuntu-latest
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    # Pinned instead of -latest: an older glibc keeps the binary usable on more distros
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
-    - uses: actions/checkout@main
-
     - name: Clone Repository
-      run: git clone "https://git.sr.ht/~grimler/Heimdall"
+      run: git clone --depth 1 --branch "$TAG" "$UPSTREAM" Heimdall
 
     - name: Install dependencies
       run: |
-          sudo apt update
-          sudo apt -y install cmake g++ pkg-config libusb-1.0-0-dev qtbase5-dev zlib1g-dev
+          sudo apt-get update
+          sudo apt-get -y install libusb-1.0-0-dev
 
     - name: Build
       working-directory: ./Heimdall
       run: |
-          mkdir build && cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make
+          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ./build/bin/heimdall version
+          tar -czf "../heimdall-$TAG-linux-x86_64.tar.gz" -C build/bin heimdall
 
     - name: Upload build to artifacts
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v7
       with:
         name: linux-build
-        path: "./Heimdall/build/bin/heimdall"
+        path: heimdall-*.tar.gz
 
   macos-build:
     name: MacOS Build
+    needs: check
+    if: needs.check.outputs.build == 'true'
     runs-on: macos-latest
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
-    - uses: actions/checkout@main
-
     - name: Clone Repository
-      run: git clone "https://git.sr.ht/~grimler/Heimdall"
+      run: git clone --depth 1 --branch "$TAG" "$UPSTREAM" Heimdall
 
     - name: Install dependencies
-      run: brew install libusb qt5 cmake
+      run: brew install libusb pkgconf
 
     - name: Build
       working-directory: ./Heimdall
       run: |
-          mkdir build && cd build
-          cmake -G "Unix Makefiles" -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release ..
-          LIBRARY_PATH=/usr/local/lib make
+          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ./build/bin/heimdall version
+          tar -czf "../heimdall-$TAG-macos-arm64.tar.gz" -C build/bin heimdall
 
     - name: Upload build to artifacts
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v7
       with:
         name: macos-build
-        path: "./Heimdall/build/bin/heimdall"
+        path: heimdall-*.tar.gz
 
   win-build:
     name: Windows Build
+    needs: check
+    if: needs.check.outputs.build == 'true'
     runs-on: windows-latest
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
-    - uses: actions/checkout@main
-
     - name: Clone Repository
-      run: |
-          git clone "https://git.sr.ht/~grimler/Heimdall"
-          cd Heimdall
-          # git checkout 
-          git revert 7c18391d
-          git revert 5093164a
-      continue-on-error: true
+      run: git clone --depth 1 --branch "$env:TAG" "$env:UPSTREAM" Heimdall
 
     - name: Install dependencies
       uses: msys2/setup-msys2@v2
       with:
+        msystem: UCRT64
         update: true
-        install: >-
-          mingw-w64-x86_64-clang
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-libusb
-          mingw-w64-x86_64-qt5-static
-          make
+        pacboy: >-
+          gcc:p
+          cmake:p
+          ninja:p
+          libusb:p
+          pkgconf:p
 
     - name: Build
       working-directory: ./Heimdall
       shell: msys2 {0}
       run: |
-          export PATH="/mingw64/bin:$PATH"
-          mkdir build && cd build
-          cmake -G "MSYS Makefiles" -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release -DQt5Widgets_DIR=/mingw64/qt5-static/lib/cmake/Qt5Widgets ..
-          make
+          cmake -B build -G Ninja -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          ./build/bin/heimdall.exe version
+
+    - name: Create archive
+      run: Compress-Archive -Path Heimdall/build/bin/* -DestinationPath "heimdall-$env:TAG-windows-x86_64.zip"
 
     - name: Upload build to artifacts
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v7
       with:
         name: win-build
-        path: "./Heimdall/build/bin/*"
+        path: heimdall-*.zip
 
   release:
     name: Release
-    needs: [linux-build, macos-build, win-build]
-    runs-on: windows-latest
+    needs: [check, linux-build, macos-build, win-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@main
-
-    - name: Get Linux build from artifacts
-      uses: actions/download-artifact@main
+    - name: Get builds from artifacts
+      uses: actions/download-artifact@v8
       with:
-        name: linux-build
-        path: ./linux-build
-
-    - name: Get MacOS build from artifacts
-      uses: actions/download-artifact@main
-      with:
-        name: macos-build
-        path: ./macos-build
-
-    - name: Get Windows build from artifacts
-      uses: actions/download-artifact@main
-      with:
-        name: win-build
-        path: ./win-build
-
-    - name: Create archives
-      run: |
-          7z a linux-build.zip .\linux-build\*
-          7z a macos-build.zip .\macos-build\*
-          7z a win-build.zip .\win-build\*
-
-    - name: Get Heimdall version
-      uses: mathiasvr/command-output@main
-      id: version
-      with:
-        run: ./win-build/heimdall.exe version
-        shell: powershell
+        pattern: "*-build"
+        merge-multiple: true
 
     - name: Upload builds to release
-      uses: svenstaro/upload-release-action@master
+      uses: softprops/action-gh-release@v3
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: ./*-build.zip
-        tag: ${{ steps.version.outputs.stdout }}
-        file_glob: true
+        tag_name: ${{ needs.check.outputs.tag }}
+        name: Heimdall ${{ needs.check.outputs.tag }}
+        body: Built from [${{ needs.check.outputs.tag }}](${{ env.UPSTREAM }}/refs/${{ needs.check.outputs.tag }}) of ${{ env.UPSTREAM }}
+        files: heimdall-*
+        overwrite_files: true
+        fail_on_unmatched_files: true
+
+  documentation:
+    name: Update Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
+
+    - name: Update README.md and LICENSE.md
+      run: |
+          sync_doc() {
+            curl -fsSL "$UPSTREAM/blob/master/$1" -o "$RUNNER_TEMP/$1"
+            touch "$3"
+            sed -i "/<!-- $2:START -->/,/<!-- $2:END -->/d" "$3"
+            { echo "<!-- $2:START -->"; cat "$RUNNER_TEMP/$1"; echo "<!-- $2:END -->"; } >> "$3"
+          }
+          sync_doc README.md README README.md
+          sync_doc LICENSE LICENSE LICENSE.md
+
+    - name: Push
+      run: |
+          git add README.md LICENSE.md
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update documentation"
+          git push
