@@ -18,6 +18,8 @@ concurrency:
 
 env:
   UPSTREAM: https://git.sr.ht/~grimler/Heimdall
+  # Linked statically into the Linux and macOS binaries
+  LIBUSB_VERSION: 1.0.29
 
 jobs:
   check:
@@ -55,17 +57,27 @@ jobs:
     - name: Clone Repository
       run: git clone --depth 1 --branch "$TAG" "$UPSTREAM" Heimdall
 
-    - name: Install dependencies
+    - name: Build static libusb
+      # Built from source without udev, so nothing but glibc is left to link dynamically
       run: |
-          sudo apt-get update
-          sudo apt-get -y install libusb-1.0-0-dev
+          curl -fsSL "https://github.com/libusb/libusb/releases/download/v$LIBUSB_VERSION/libusb-$LIBUSB_VERSION.tar.bz2" | tar -xj
+          cd "libusb-$LIBUSB_VERSION"
+          ./configure --prefix="$RUNNER_TEMP/libusb" --enable-static --disable-shared --disable-udev
+          make -j"$(nproc)" install
 
     - name: Build
       working-directory: ./Heimdall
+      env:
+        PKG_CONFIG_PATH: ${{ runner.temp }}/libusb/lib/pkgconfig
       run: |
-          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build build --parallel
           ./build/bin/heimdall version
+          ldd build/bin/heimdall
+          if ldd build/bin/heimdall | grep -E 'libusb|libudev|libstdc\+\+|libgcc_s'; then
+            echo "::error::heimdall still links a bundled dependency dynamically"; exit 1
+          fi
           tar -czf "../heimdall-$TAG-linux-x86_64.tar.gz" -C build/bin heimdall
 
     - name: Upload build to artifacts
@@ -86,14 +98,29 @@ jobs:
       run: git clone --depth 1 --branch "$TAG" "$UPSTREAM" Heimdall
 
     - name: Install dependencies
-      run: brew install libusb pkgconf
+      run: brew install pkgconf
+
+    - name: Build static libusb
+      run: |
+          curl -fsSL "https://github.com/libusb/libusb/releases/download/v$LIBUSB_VERSION/libusb-$LIBUSB_VERSION.tar.bz2" | tar -xj
+          cd "libusb-$LIBUSB_VERSION"
+          ./configure --prefix="$RUNNER_TEMP/libusb" --enable-static --disable-shared
+          make -j"$(sysctl -n hw.ncpu)" install
 
     - name: Build
       working-directory: ./Heimdall
+      env:
+        PKG_CONFIG_PATH: ${{ runner.temp }}/libusb/lib/pkgconfig
       run: |
-          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
+          # Upstream already adds IOKit and CoreFoundation; static libusb also needs Security
+          cmake -B build -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-framework Security"
           cmake --build build --parallel
           ./build/bin/heimdall version
+          otool -L build/bin/heimdall
+          if otool -L build/bin/heimdall | tail -n +2 | grep -Ev '^[[:space:]]+/(usr/lib|System/Library)/'; then
+            echo "::error::heimdall links a non-system library dynamically"; exit 1
+          fi
           tar -czf "../heimdall-$TAG-macos-arm64.tar.gz" -C build/bin heimdall
 
     - name: Upload build to artifacts
@@ -129,12 +156,23 @@ jobs:
       working-directory: ./Heimdall
       shell: msys2 {0}
       run: |
+          # Upstream links with -static, but pkg-config resolves libusb to the DLL import
+          # library; removing it leaves only libusb-1.0.a for the linker to find
+          rm /ucrt64/lib/libusb-1.0.dll.a
           cmake -B build -G Ninja -DDISABLE_FRONTEND=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build
           ./build/bin/heimdall.exe version
+          ldd build/bin/heimdall.exe
+          if ldd build/bin/heimdall.exe | grep -i '/ucrt64/'; then
+            echo "::error::heimdall.exe links an MSYS2 DLL dynamically"; exit 1
+          fi
 
     - name: Create archive
-      run: Compress-Archive -Path Heimdall/build/bin/* -DestinationPath "heimdall-$env:TAG-windows-x86_64.zip"
+      run: |
+          # Runs outside the MSYS2 shell, so this fails if the exe still needs an MSYS2 DLL
+          ./Heimdall/build/bin/heimdall.exe version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Compress-Archive -Path Heimdall/build/bin/* -DestinationPath "heimdall-$env:TAG-windows-x86_64.zip"
 
     - name: Upload build to artifacts
       uses: actions/upload-artifact@v7
